@@ -1,15 +1,15 @@
 import {
   AdvancedMarker,
-  APIProvider,
   Map,
   MapCameraChangedEvent,
   useMap,
   useMapsLibrary,
 } from "@vis.gl/react-google-maps";
 import { Loader2 } from "lucide-react";
-import { FC, useEffect, useRef, useState } from "react";
+import { FC, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
+import { debounce } from "./lib/utils";
 import {
   fetchCenter,
   Location,
@@ -26,14 +26,6 @@ interface Properties {
   onClose: () => void;
 }
 
-const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
-
-if (!API_KEY) {
-  throw new Error(
-    "Missing Google Maps API key. Create VITE_GOOGLE_API_KEY in .env.local"
-  );
-}
-
 const DEFAULT_ZOOM = 12;
 
 const Gmap: FC<Properties> = ({ onClose }) => {
@@ -43,31 +35,51 @@ const Gmap: FC<Properties> = ({ onClose }) => {
   const origin = useAppSelector(selectOrigin);
   const destination = useAppSelector(selectDestination);
   const mode = useAppSelector(selectMode);
+  const prevMode = useRef(mode);
 
   const mapCenter = useRef<Location>();
 
-  const centerToUseOnMap =
-    mode === "origin" ? origin : mode === "destination" ? destination : center;
+  const map = useMap();
 
-  const handleMapCenterChanged = (event: MapCameraChangedEvent) => {
-    mapCenter.current = event.detail.center;
-  };
+  const delayedHandleMapCenterChanged = useMemo(
+    () =>
+      debounce((event: MapCameraChangedEvent) => {
+        mapCenter.current = event.detail.center;
+
+        if (mode === "origin") {
+          dispatch(setOrigin(mapCenter.current));
+
+          return;
+        }
+
+        if (mode === "destination") {
+          dispatch(setDestination(mapCenter.current));
+
+          return;
+        }
+      }, 300),
+    [dispatch, mode]
+  );
 
   const handleClose = () => {
     onClose();
+  };
 
+  useEffect(() => {
+    if (mode !== prevMode.current) prevMode.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
     if (mode === "origin") {
-      dispatch(setOrigin(mapCenter.current));
-
-      return;
+      if (origin) map?.setCenter(origin);
     }
 
     if (mode === "destination") {
-      dispatch(setDestination(mapCenter.current));
-
-      return;
+      if (destination) map?.setCenter(destination);
     }
-  };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, mode]);
 
   useEffect(() => {
     if (!center) dispatch(fetchCenter());
@@ -91,26 +103,25 @@ const Gmap: FC<Properties> = ({ onClose }) => {
             ></path>
           </svg>
 
-          <APIProvider apiKey={API_KEY}>
-            <Map
-              className="w-full h-full"
-              defaultCenter={centerToUseOnMap}
-              defaultZoom={DEFAULT_ZOOM}
-              mapId={"DEMO_MAP_ID"}
-              onCenterChanged={handleMapCenterChanged}
-              disableDefaultUI
-            >
-              {mode !== "origin" && origin && (
-                <AdvancedMarker position={origin} />
-              )}
+          <Map
+            className="w-full h-full"
+            defaultCenter={center}
+            defaultZoom={DEFAULT_ZOOM}
+            mapId={"DEMO_MAP_ID"}
+            onCenterChanged={delayedHandleMapCenterChanged}
+            reuseMaps
+            disableDefaultUI
+          >
+            {mode !== "origin" && origin && (
+              <AdvancedMarker position={origin} />
+            )}
 
-              {mode !== "destination" && destination && (
-                <AdvancedMarker position={destination} />
-              )}
+            {mode !== "destination" && destination && (
+              <AdvancedMarker position={destination} />
+            )}
 
-              <Directions origin={origin} destination={destination} />
-            </Map>
-          </APIProvider>
+            <Directions origin={origin} destination={destination} />
+          </Map>
 
           <div className="grid z-10 gap-2 absolute bottom-4 left-4 right-4">
             <p></p>
@@ -143,11 +154,14 @@ const Directions: FC<{
     if (!routesLibrary || !map) return;
     setDirectionsService(new routesLibrary.DirectionsService());
     setDirectionsRenderer(
-      new routesLibrary.DirectionsRenderer({ map, suppressMarkers: true })
+      new routesLibrary.DirectionsRenderer({
+        map,
+        suppressMarkers: true,
+        preserveViewport: true,
+      })
     );
   }, [routesLibrary, map]);
 
-  // Use directions service
   useEffect(() => {
     if (!directionsService || !directionsRenderer || !destination || !origin)
       return;
